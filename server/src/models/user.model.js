@@ -1,3 +1,4 @@
+
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 
@@ -7,7 +8,7 @@ const userSchema = new mongoose.Schema(
       type: String,
       required: [true, "Name is required"],
       trim: true,
-      minlength: [2, "Name must be at least 2 characters"],
+      minlength: [2, "Name must have at least 2 characters"],
       maxlength: [100, "Name cannot exceed 100 characters"],
     },
 
@@ -17,27 +18,28 @@ const userSchema = new mongoose.Schema(
       unique: true,
       lowercase: true,
       trim: true,
-      index: true,
+      match: [
+        /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
+        "Please provide a valid email address",
+      ],
     },
 
     password: {
       type: String,
       required: [true, "Password is required"],
-      minlength: [8, "Password must be at least 8 characters"],
+      minlength: [8, "Password must have at least 8 characters"],
       select: false,
     },
 
     phone: {
       type: String,
       trim: true,
+      default: null,
     },
 
     role: {
       type: String,
-      enum: {
-        values: ["student", "warden", "staff", "admin"],
-        message: "Invalid user role",
-      },
+      enum: ["student", "warden", "staff", "admin"],
       default: "student",
       index: true,
     },
@@ -58,9 +60,10 @@ const userSchema = new mongoose.Schema(
   }
 );
 
-userSchema.pre("save", async function (next) {
+// Hash password before saving
+userSchema.pre("save", async function () {
   if (!this.isModified("password")) {
-    return next();
+    return;
   }
 
   const salt = await bcrypt.genSalt(12);
@@ -69,10 +72,9 @@ userSchema.pre("save", async function (next) {
     this.password,
     salt
   );
-
-  next();
 });
 
+// Compare password during login
 userSchema.methods.comparePassword = async function (
   candidatePassword
 ) {
@@ -80,6 +82,21 @@ userSchema.methods.comparePassword = async function (
     candidatePassword,
     this.password
   );
+};
+
+// Remove sensitive information from API responses
+userSchema.methods.toSafeObject = function () {
+  return {
+    id: this._id.toString(),
+    name: this.name,
+    email: this.email,
+    phone: this.phone,
+    role: this.role,
+    isActive: this.isActive,
+    lastLoginAt: this.lastLoginAt,
+    createdAt: this.createdAt,
+    updatedAt: this.updatedAt,
+  };
 };
 
 const User = mongoose.model("User", userSchema);
