@@ -1,6 +1,6 @@
 # Smart Hostel Management System
 
-A modern, scalable Hostel Management System backend built with **Node.js**, **Express**, and **MongoDB (Mongoose)** featuring robust authentication, role-based access control (RBAC), and structured database schemas for student accommodation workflows.
+A modern, scalable Hostel Management System backend built with **Node.js**, **Express**, and **MongoDB (Mongoose)** featuring robust authentication, role-based access control (RBAC), Zod request schema validation, dedicated brute-force rate limiters, and structured database schemas for student accommodation workflows.
 
 ---
 
@@ -20,6 +20,9 @@ A modern, scalable Hostel Management System backend built with **Node.js**, **Ex
   - [3. User Login](#3-user-login)
   - [4. Profile Verification (Protected)](#4-profile-verification-protected)
   - [5. Role-Based Access Check (Warden / Admin)](#5-role-based-access-check-warden--admin)
+- [Validation & Security Architecture](#validation--security-architecture)
+  - [Request Validation with Zod](#request-validation-with-zod)
+  - [Dedicated Authentication Rate Limiters](#dedicated-authentication-rate-limiters)
 - [Authentication & Security Flow](#authentication--security-flow)
 - [Git Branching Strategy](#git-branching-strategy)
 
@@ -28,7 +31,7 @@ A modern, scalable Hostel Management System backend built with **Node.js**, **Ex
 ## Overview
 
 The Smart Hostel system automates and streamlines hostel administration tasks including:
-- Student registration and secure authentication.
+- Student registration and secure authentication with schema validation.
 - Role-based authorization (`student`, `warden`, `staff`, `admin`).
 - Token handling using JSON Web Tokens (JWT) stored in HTTP-Only cookies.
 - Comprehensive hostel modules: room allocation, complaints, fee payments, visitor logs, and official notice boards.
@@ -40,11 +43,12 @@ The Smart Hostel system automates and streamlines hostel administration tasks in
 - **Runtime**: Node.js (ES Modules)
 - **Framework**: Express.js
 - **Database**: MongoDB with Mongoose ODM
-- **Authentication**: JWT (`jsonwebtoken`) & password encryption with `bcryptjs`
+- **Schema Validation**: Zod (`zod`)
+- **Authentication**: JWT (`jsonwebtoken`) & password encryption with `bcryptjs` (12 salt rounds)
 - **Security & Utilities**:
   - `helmet`: Security HTTP headers
   - `cors`: Cross-Origin Resource Sharing
-  - `express-rate-limit`: Rate limiting to prevent brute force & DoS
+  - `express-rate-limit`: Dedicated rate limiting against brute force & DoS
   - `cookie-parser`: Secure HTTP-only cookie parsing
   - `morgan`: HTTP request logging
 
@@ -71,11 +75,12 @@ smart-hostel/
 │   │   ├── controllers/
 │   │   │   └── auth.controller.js
 │   │   ├── middlewares/
-│   │   │   ├── auth.middleware.js     # JWT verification & user attachment
-│   │   │   ├── role.middleware.js     # Role-based authorization
-│   │   │   ├── error.middleware.js    # Global error handling
-│   │   │   ├── notFound.middleware.js # 404 handler
-│   │   │   └── validate.middleware.js
+│   │   │   ├── auth.middleware.js          # JWT verification & req.user attachment
+│   │   │   ├── authRateLimit.middleware.js # Dedicated registration & login rate limiters
+│   │   │   ├── role.middleware.js          # Role-based authorization (RBAC)
+│   │   │   ├── error.middleware.js         # Global error handling
+│   │   │   ├── notFound.middleware.js      # 404 handler
+│   │   │   └── validate.middleware.js      # Zod request validation middleware
 │   │   ├── models/
 │   │   │   ├── user.model.js
 │   │   │   ├── hostel.model.js
@@ -97,6 +102,8 @@ smart-hostel/
 │   │   │   ├── asyncHandler.js
 │   │   │   ├── response.js
 │   │   │   └── tokens.js
+│   │   ├── validators/
+│   │   │   └── auth.validator.js           # Zod schemas for register & login
 │   │   ├── app.js             # Express app setup and middleware configuration
 │   │   └── server.js          # Application entrypoint & HTTP server listener
 │   ├── .env.example
@@ -188,20 +195,21 @@ curl -X GET http://localhost:5001/api/v1/health
 
 ### 2. User Registration
 
-Registers a new student account in the system.
+Registers a new student account with Zod schema validation and registration rate limiting (5 attempts/hour).
 
 - **Method**: `POST`
 - **Route**: `/api/v1/auth/register`
-- **Authentication**: None
+- **Rate Limit**: 5 attempts per IP per hour (`registerLimiter`)
+- **Validation**: Strict Zod schema (`registerSchema`)
 - **Content-Type**: `application/json`
 
 #### Request Body Schema
-| Field | Type | Required | Description |
+| Field | Type | Required | Constraints |
 | :--- | :--- | :--- | :--- |
-| `name` | String | Yes | Minimum 2 characters, max 100 |
-| `email` | String | Yes | Valid email format, unique |
-| `password` | String | Yes | Minimum 8 characters (max 72 bytes) |
-| `phone` | String | No | Contact phone number |
+| `name` | String | Yes | 2 to 100 characters, trimmed |
+| `email` | String | Yes | Valid email format, trimmed, lowercase |
+| `password` | String | Yes | 8 to 128 characters, max 72 bytes |
+| `phone` | String | No | 10 to 15 digits, optional `+` prefix |
 
 #### Sample Request
 ```bash
@@ -211,7 +219,7 @@ curl -X POST http://localhost:5001/api/v1/auth/register \
     "name": "Shiv Prakash",
     "email": "shiv@example.com",
     "password": "password123",
-    "phone": "+91 9876543210"
+    "phone": "+919876543210"
   }'
 ```
 
@@ -225,7 +233,7 @@ curl -X POST http://localhost:5001/api/v1/auth/register \
       "id": "6acb89cdcca5f3892ad245b6",
       "name": "Shiv Prakash",
       "email": "shiv@example.com",
-      "phone": "+91 9876543210",
+      "phone": "+919876543210",
       "role": "student",
       "isActive": true,
       "lastLoginAt": null,
@@ -233,6 +241,28 @@ curl -X POST http://localhost:5001/api/v1/auth/register \
       "updatedAt": "2026-10-11T13:06:21.334Z"
     }
   }
+}
+```
+
+#### Error Response (`400 Bad Request - Validation Failure`)
+```json
+{
+  "success": false,
+  "message": "Request validation failed",
+  "errors": [
+    {
+      "field": "name",
+      "message": "Name must have at least 2 characters"
+    },
+    {
+      "field": "email",
+      "message": "Invalid email address"
+    },
+    {
+      "field": "password",
+      "message": "Password must have at least 8 characters"
+    }
+  ]
 }
 ```
 
@@ -248,12 +278,19 @@ curl -X POST http://localhost:5001/api/v1/auth/register \
 
 ### 3. User Login
 
-Authenticates a user and sets an `accessToken` HTTP-only cookie.
+Authenticates a user with login rate limiting and sets an `accessToken` HTTP-only cookie.
 
 - **Method**: `POST`
 - **Route**: `/api/v1/auth/login`
-- **Authentication**: None
+- **Rate Limit**: 10 failed attempts per IP per 15 mins (`loginLimiter`)
+- **Validation**: Strict Zod schema (`loginSchema`)
 - **Content-Type**: `application/json`
+
+#### Request Body Schema
+| Field | Type | Required | Constraints |
+| :--- | :--- | :--- | :--- |
+| `email` | String | Yes | Valid email format, trimmed, lowercase |
+| `password` | String | Yes | 1 to 128 characters |
 
 #### Sample Request
 ```bash
@@ -278,7 +315,7 @@ Set-Cookie: accessToken=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...; Max-Age=900; Pa
       "id": "6acb89cdcca5f3892ad245b6",
       "name": "Shiv Prakash",
       "email": "shiv@example.com",
-      "phone": "+91 9876543210",
+      "phone": "+919876543210",
       "role": "student",
       "isActive": true,
       "lastLoginAt": "2026-10-11T13:06:34.648Z",
@@ -294,6 +331,14 @@ Set-Cookie: accessToken=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...; Max-Age=900; Pa
 {
   "success": false,
   "message": "Invalid email or password"
+}
+```
+
+#### Error Response (`429 Too Many Requests`)
+```json
+{
+  "success": false,
+  "message": "Too many requests. Please try again later."
 }
 ```
 
@@ -323,7 +368,7 @@ curl -X GET http://localhost:5001/api/v1/auth/profile-check \
       "id": "6acb89cdcca5f3892ad245b6",
       "name": "Shiv Prakash",
       "email": "shiv@example.com",
-      "phone": "+91 9876543210",
+      "phone": "+919876543210",
       "role": "student",
       "isActive": true,
       "lastLoginAt": "2026-10-11T13:06:34.648Z",
@@ -362,18 +407,41 @@ Validates whether the authenticated user has administrative or warden privileges
 
 ---
 
+## Validation & Security Architecture
+
+### Request Validation with Zod
+
+The application uses **Zod** (`zod`) schemas wrapped by [`validate.middleware.js`](file:///Users/shivprakash/Desktop/DBMS_PROJECT/smart-hostel/server/src/middlewares/validate.middleware.js) to enforce strict request validation:
+- Input sanitization (`trim`, `toLowerCase`)
+- Field type and boundary enforcement (`min`, `max`, `regex`)
+- Bcrypt password limit enforcement (max 72 bytes)
+- Unknown fields rejection via `z.strictObject()`
+- Standardized error format returning `field` and `message` list
+
+### Dedicated Authentication Rate Limiters
+
+Configured in [`authRateLimit.middleware.js`](file:///Users/shivprakash/Desktop/DBMS_PROJECT/smart-hostel/server/src/middlewares/authRateLimit.middleware.js):
+- **Registration Limiter**: 5 requests / IP / hour (prevents bot account creation spam).
+- **Login Limiter**: 10 failed requests / IP / 15 minutes with `skipSuccessfulRequests: true` (prevents brute-force credential stuffing while not penalizing legitimate logins).
+
+---
+
 ## Authentication & Security Flow
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor Client as Client (React / Postman)
+    participant Limiter as Auth Rate Limiter
+    participant Validator as Zod Validator
     participant AuthRouter as Auth Routes
     participant AuthCtrl as Auth Controller
-    participant AuthService as User / Auth Service
+    participant AuthService as Auth Service
     participant DB as MongoDB
     
-    Client->>AuthRouter: POST /api/v1/auth/login { email, password }
+    Client->>Limiter: POST /api/v1/auth/login { email, password }
+    Limiter->>Validator: Pass rate check
+    Validator->>AuthRouter: Validated & normalized body
     AuthRouter->>AuthCtrl: login(req, res)
     AuthCtrl->>AuthService: loginUser(credentials)
     AuthService->>DB: User.findOne({ email }).select('+password')

@@ -6,6 +6,18 @@ import {
     login,
 } from "../controllers/auth.controller.js";
 
+import validate from "../middlewares/validate.middleware.js";
+
+import {
+    registerSchema,
+    loginSchema,
+} from "../validators/auth.validator.js";
+
+import {
+    registerLimiter,
+    loginLimiter,
+} from "../middlewares/authRateLimit.middleware.js";
+
 import authenticate from "../middlewares/auth.middleware.js";
 import authorizeRoles from "../middlewares/role.middleware.js";
 
@@ -16,16 +28,26 @@ const router = Router();
 
 /*
  * PUBLIC ROUTES
- * Authentication not required
  */
 
-router.post("/register", register);
+// Student registration
+router.post(
+    "/register",
+    registerLimiter,
+    validate(registerSchema),
+    register
+);
 
-router.post("/login", login);
+// User login
+router.post(
+    "/login",
+    loginLimiter,
+    validate(loginSchema),
+    login
+);
 
 /*
  * TEMPORARY DEVELOPMENT TEST ROUTES
- * Remove after testing authentication/authorization
  */
 
 if (env.nodeEnv === "development") {
@@ -44,7 +66,7 @@ if (env.nodeEnv === "development") {
         }
     );
 
-    // Only admin and warden
+    // Only admin or warden
     router.get(
         "/warden-check",
         authenticate,
